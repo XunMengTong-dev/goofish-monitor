@@ -1,0 +1,50 @@
+"""
+结果记录富化与文件名校验服务
+"""
+
+from src.infrastructure.persistence.storage_names import normalize_keyword_from_filename
+from src.services.price_history_service import (
+    build_item_price_context,
+    load_price_snapshots,
+    parse_price_value,
+)
+from src.services.result_storage_service import load_visible_result_item_ids
+
+
+def validate_result_filename(filename: str) -> None:
+    if not filename.endswith(".jsonl") or "/" in filename or ".." in filename:
+        raise ValueError("无效的文件名")
+
+
+def enrich_records_with_price_insight(records: list[dict], filename: str) -> list[dict]:
+    page_item_ids = {
+        str((record.get("商品信息", {}) or {}).get("商品ID") or "").strip()
+        for record in records
+    }
+    page_item_ids.discard("")
+    if not page_item_ids:
+        return records
+
+    keyword = normalize_keyword_from_filename(filename)
+    item_snapshots = load_price_snapshots(keyword, item_ids=page_item_ids)
+    if not item_snapshots:
+        return records
+
+    visible_item_ids = load_visible_result_item_ids(filename)
+    visible_snapshots = load_price_snapshots(
+        keyword,
+        item_ids=visible_item_ids,
+        latest_run_only=True,
+    )
+    enriched = []
+    for record in records:
+        info = record.get("商品信息", {}) or {}
+        clone = dict(record)
+        clone["price_insight"] = build_item_price_context(
+            item_snapshots,
+            item_id=str(info.get("商品ID") or ""),
+            current_price=parse_price_value(info.get("当前售价")),
+            market_snapshots=visible_snapshots,
+        )
+        enriched.append(clone)
+    return enriched
